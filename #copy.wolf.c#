@@ -1,0 +1,211 @@
+#include "extensions.h"
+#include <stdlib.h>
+#include <math.h>         // Either math.h or cmath.h has erfc (CHECK)
+
+/* Wolf summation method for a QM/MM interface: The potential is 
+   truncated at Rc [Bohr] and damped, as well as smooth at the origin
+   ADD CITATIONS. Assumed that the simulation cell side lengths
+   are greater than 9.0 Angstrom (As Rc is 9.0 Ang) */
+
+// Distance between point charge and grid point
+double distance(double *a, double *b);
+
+// Define the Wolf potential, positions in [Bohr]
+double wolf_pot_value(double *pos,     // grid point position
+                      double *pc_pos,  // point charge positions
+                      double *pc_q,    // point charge value
+                      int npc,         // number of point charges
+                      double v_max)
+
+// Loop over all point charges and add their potential at a grid point
+{
+  // Constants [Bohr,Bohr^-1,Bohr]
+  double Rc   = 17.0075336;            // Truncated at Rc 
+  double beta = 0.1164190;             // Damping value
+  double y    = 0.1889726;             // Smearing constant
+
+  // Wolf truncation constants (limits): Charge neutralization
+  double top_c = y*y*y*y - Rc*Rc*Rc*Rc;
+  double bot_c = y*y*y*y*y - Rc*Rc*Rc*Rc*Rc;
+  double c1    = top_c / bot_c;
+  double c2    = 1.0 / Rc;
+  double c3    = erfc(beta*Rc) / Rc;
+
+  // Variables
+  double V   = 0.0;
+  double top = 0.0;
+  double bot = 0.0;
+  double q = 0.0;
+
+  for (int a=0; a < npc; a++) {
+    double d = distance(pc_pos + a*3, pos);
+    top = y*y*y*y - d*d*d*d;
+    bot = y*y*y*y*y - d*d*d*d*d;
+    q = pc_q[a];
+    if (d > Rc) {q = 0.0;}
+    V  -= q * ( top / bot - 1.0 / d +  erfc(beta*d) / d 
+            - c1 + c2 - c3 ); 
+  }
+  return V;
+}
+
+/* Derivative of the Wolf potential, for forces on MM atoms. Positions in Angstrom.
+   See wolf_pot_value for other definitions */
+double wolf_der_value(double *pos,
+                      double *pc_pos,
+                      double *n_q)
+
+// Derivative at a particular point
+{
+  // Constants [Ang, Ang^-1, Ang]
+  double Rc   = 9.0000000;
+  double beta = 0.2200000;
+  double y    = 0.1000000;
+  double dPi  = 3.14159265358979; // pi
+
+  // Wolf derivative truncation constants (derivative - limit)
+  double top_c = 4.0*Rc*Rc*Rc*Rc*Rc*Rc*Rc*Rc - 4.0*y*y*y*y*y*Rc*Rc*Rc  
+                 + .0*y*y*y*y*Rc*Rc*Rc*Rc - 5.0*Rc*Rc*Rc*Rc*Rc*Rc*Rc*Rc;
+  double bot_c = Rc*Rc*Rc*Rc*Rc*Rc*Rc*Rc*Rc*Rc - 2.0*Rc*Rc*Rc*Rc*Rc*y*y*y*y*y
+                 + y*y*y*y*y*y*y*y*y*y;
+  double c1    = top_c / bot_c;
+  double c2    = 1.0 / Rc / Rc;
+  double c3    = erfc(beta*Rc) / Rc / Rc;
+  double c4    = 2.0 * beta / sqrt(dPi) * exp(-beta*beta*Rc*Rc) / Rc;
+  
+  // Variable
+  double dV = 0.0;
+  double d = distance(pc_pos + 0, pos);
+  double top = 0.0;
+  double bot = 0.0;
+  double q = 0.0;
+
+  top = 4.0*d*d*d*d*d*d*d*d - 4.0*y*y*y*y*y*d*d*d
+                 + 5.0*y*y*y*y*d*d*d*d - 5.0*d*d*d*d*d*d*d*d;
+  bot = d*d*d*d*d*d*d*d*d*d + y*y*y*y*y*y*y*y*y*y 
+                 - 2.0*d*d*d*d*d*y*y*y*y*y;
+  q   = n_q[0]; 
+  if (d > Rc) {q = 0.0;}
+  dV  -= q * ( top/bot + 1.0 / d / d - erfc(beta * d) / d / d 
+          - 2.0 * beta / sqrt(dPi) * exp(-beta * beta * d * d) / d
+          - c1 - c2 + c3 + c4 );
+  
+  return dV;
+}
+
+
+/* Since it is assumed that cell side lengths are greater than Rc, the classical
+   point charges are translated in real-space beforehand. But only once, which 
+   results in 27 times the original array. */
+PyObject *wolf_potential_value(PyObject *self, PyObject *args)
+{
+  PyArrayObject* posi_c;
+  PyArrayObject* pci_nc;
+  PyArrayObject* qi_n;
+
+  // Check if input is of the correct type
+  if (!PyArg_ParseTuple(args, "OOO", &posi_c, &pci_nc, &qi_n)) 
+    return NULL;
+
+  double *pos_c = DOUBLEP(posi_c);   // Position array for grid point
+  int npc = pci_nc->dimensions[0];   // Number of point charges
+  double *pc_nc = DOUBLEP(pci_nc);   // Position array for ALL point charges
+  double *q_n = DOUBLEP(qi_n);       // Charge value of ALL point charges
+
+  return Py_BuildValue("d", wolf_pot_value(pos_c, pc_nc, q_n, npc, 1.e+99));
+}
+
+PyObject *wolf_potential(PyObject *self, PyObject *args)
+{
+  PyArrayObject* poti;   
+  PyArrayObject* pci_nc; 
+  PyArrayObject* beg_c;
+  PyArrayObject* end_c;
+  PyArrayObject* hh_c;
+  PyArrayObject* qi_n;
+  if (!PyArg_ParseTuple(args, "OOOOOO", &poti, &pci_nc, &qi_n,
+                        &beg_c, &end_c, &hh_c))
+    return NULL;
+
+  double *pot = DOUBLEP(poti);    // Blank grid to place external potential on
+  int npc = pci_nc->dimensions[0];
+  double *pc_nc = DOUBLEP(pci_nc); 
+  double *q_n = DOUBLEP(qi_n);
+  long *beg = LONGP(beg_c);       // Indexes for the beginning of the grid
+  long *end = LONGP(end_c);       // Indexes for the end of the grid
+  double *h_c = DOUBLEP(hh_c);    // Grid spacing in [Bohr]
+
+  /* Run over all grid points, at each grid point call Wolf potential and add
+     contributions from ALL point charges */
+  int n[3], ij;
+  double pos[3];
+  for (int c = 0; c < 3; c++) { n[c] = end[c] - beg[c]; }
+
+  // Loop over all gpts
+  for (int i = 0; i < n[0]; i++) {
+    pos[0] = (beg[0] + i) * h_c[0];                   // x-axis position
+    for (int j = 0; j < n[1]; j++) { 
+      pos[1] = (beg[1] + j) * h_c[1];                 // y-axis position
+      ij = (i*n[1] + j)*n[2];                         // memory address (P1)
+      for (int k = 0; k < n[2]; k++) {
+        pos[2] = (beg[2] + k) * h_c[2];               // z-axis position
+        pot[ij + k] = wolf_pot_value(pos, pc_nc, q_n, npc, 1.e+99); /* add external pot. 
+        to grid point at address ij + k */
+      }
+    }
+  }
+
+  Py_RETURN_NONE;
+}
+
+PyObject *wolf_der_potential(PyObject *self, PyObject *args)
+{
+  PyArrayObject* forcei;
+  PyArrayObject* densi;
+  PyArrayObject* pci_nc;
+  PyArrayObject* qi_n;
+  PyArrayObject* beg_c;
+  PyArrayObject* end_c;
+  PyArrayObject* hh_c;
+  if (!PyArg_ParseTuple(args, "OOOOOOO", &forcei, &densi, &pci_nc,
+                        &qi_n, &beg_c, &end_c, &hh_c))
+    return NULL;
+
+  double *force = DOUBLEP(forcei);  // xyz-Force array for a classical atom
+  double *dens = DOUBLEP(densi);    // pseudo-electron density, on the grid
+  double *pc_nc = DOUBLEP(pci_nc);  
+  double *q_n = DOUBLEP(qi_n);
+  long *beg = LONGP(beg_c);
+  long *end = LONGP(end_c);
+  double *h_c = DOUBLEP(hh_c);
+
+  /* Run over all density elements on the grid and call the derivative of the Wolf
+     potential, and add to forces of a particular atom. The atom is pre-translated
+     to nearest neighbour cells, and the total forces for atom i is collected in 
+     the python scipt - aseinterface.py */
+  int n[3], ij;
+  double pos[3], dis[3], fc;
+  double distance(double *a, double *b);
+
+  for (int c = 0; c < 3; c++) { n[c] = end[c] - beg[c]; }
+  // Loop over the density grid, evaluate and sum over forces for a particular atom
+  for (int i = 0; i < n[0]; i++) {
+    pos[0] = (beg[0] + i) * h_c[0];
+    dis[0] = pos[0] - pc_nc[0];
+    for (int j = 0; j < n[1]; j++) {
+      pos[1] = (beg[1] + j) * h_c[1];
+      dis[1] = pos[1] - pc_nc[1];
+      ij = (i*n[1] + j)*n[2];
+      for (int k = 0; k < n[2]; k++) {
+        pos[2] = (beg[2] + k) * h_c[2];
+        dis[2] = pos[2] - pc_nc[2];
+        double d = distance(pc_nc + 0, pos);
+        fc = dens[ij + k] * wolf_der_value(pos, pc_nc, q_n) / d;
+        for (int m = 0; m < 3; m++) {force[m] += fc * dis[m]; }
+      }
+    }
+  }
+  
+  Py_RETURN_NONE;
+}
+  

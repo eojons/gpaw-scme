@@ -1,0 +1,17 @@
+Current configuration
+libraries ['xc', 'lapack', 'f77blas', 'cblas', 'atlas']
+library_dirs ['/home/seminar/Work/xc/lib']
+include_dirs ['/home/seminar/Work/xc/include']
+define_macros [('NPY_NO_DEPRECATED_API', 7)]
+extra_link_args []
+extra_compile_args ['-Wall', '-std=c99']
+runtime_library_dirs []
+extra_objects []
+
+Parallel configuration
+mpicompiler mpicc
+mpi_libraries []
+mpi_library_dirs []
+mpi_include_dirs []
+mpi_define_macros []
+mpi_runtime_library_dirs []
