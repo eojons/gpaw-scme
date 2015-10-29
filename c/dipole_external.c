@@ -7,17 +7,15 @@ double distance(double *a, double *b);
 
 double dipole_der_value(double *pos,   // grid point position [Ang]
                         double *cm,    // CM position of dipole [Ang]
-                        double *dis,   // distance between gp and CM [Ang]
-                        double *mu)    // dipole value
+                        double dis,   // distance between gp and CM [Ang]
+                        double mu)    // dipole value
 // Find derivative at particular point
 {
-  double V[3];
-  double d  = distance(cm_pos + 0, pos);
+  double V = 0.0;
+  double d  = distance(cm + 0, pos);
   double b1 = d*d*d;
   double b2 = b1*d;
-  for (int c=0; c < 3; c++) {
-      V[c] -= mu[c] / b1 - 3.0*mu[c]*dis[c] / d / b2;
-  }
+  V -= mu / b1 - 3.0*mu*dis / d / b2;
   return V;
 }
 
@@ -42,7 +40,7 @@ PyObject *dipole_der_potential(PyObject *self, PyObject *args)
   double *h_c = DOUBLEP(hh_c);
 
   int n[3], ij;
-  double pos[3], dis[3]
+  double pos[3], dis[3];
 
   for (int c = 0; c < 3; c++) { n[c] = end[c] - beg[c]; }
   // Loop over all grid points
@@ -56,7 +54,7 @@ PyObject *dipole_der_potential(PyObject *self, PyObject *args)
       for (int k = 0; k < n[2]; k++) {
         pos[2] = (beg[2] + k) * h_c[2];
         dis[2] = cm_nc[2] - pos[2];
-        force += dens[ij + k] * dipole_der_value(pos, cm_nc, dis, cm_mu);
+        for (int m = 0; m < 3; m++) { force[m] += dens[ij + k]*dipole_der_value(pos, cm_nc, dis[m], cm_mu[m]); }
       }
     }
   }
