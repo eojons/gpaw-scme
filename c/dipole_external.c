@@ -16,7 +16,7 @@ double dipole_der_value(double *pos,   // grid point position [Ang]
   double b1 = d*d*d;
   double b2 = b1*d;
   for (int c=0; c < 3; c++) {
-      V[c] -= mu[c] / b1 - 3.0*mu[c]*dis[c]*dr / d / b2;
+      V[c] -= mu[c] / b1 - 3.0*mu[c]*dis[c] / d / b2;
   }
   return V;
 }

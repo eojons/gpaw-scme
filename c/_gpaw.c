@@ -28,6 +28,7 @@ PyObject* craypat_region_end(PyObject *self, PyObject *args);
 PyObject* pc_potential(PyObject *self, PyObject *args);
 PyObject* pc_potential_value(PyObject *self, PyObject *args);
 PyObject* pc_der_potential(PyObject *self, PyObject *args);
+PyObject* dipole_der_potential(PyObject *self, PyObject *args);
 /* PyObject* wolf_potential(PyObject *self, PyObject *args);
  * PyObject* wolf_potential_value(PyObject *self, PyObject *args);
  * PyObject* wolf_der_potential(PyObject *self, PyObject *args); */
@@ -177,6 +178,7 @@ static PyMethodDef functions[] = {
   {"pc_potential", pc_potential, METH_VARARGS, 0},
   {"pc_potential_value", pc_potential_value, METH_VARARGS, 0},
   {"pc_der_potential", pc_der_potential, METH_VARARGS, 0},
+  {"dipole_der_potential", dipole_der_potential, METH_VARARGS, 0},
   /*
   {"wolf_potential", wolf_potential, METH_VARARGS, 0},
   {"wolf_potential_value", wolf_potential_value, METH_VARARGS, 0},
