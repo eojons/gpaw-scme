@@ -518,7 +518,10 @@ class RealSpaceHamiltonian(Hamiltonian):
         Eext = 0.0
         if self.vext is not None:
             assert self.collinear
-            vt_g += self.vext.get_potential(self.finegd)
+            if hasattr(self.vext, 'calcmm'):
+                vt_g += self.vext.get_potential(self.finegd,density,self.wfs)
+            else:
+                vt_g += self.vext.get_potential(self.finegd)
             Eext = self.finegd.integrate(vt_g, density.nt_g,
                                          global_integral=False) - Ebar
 
