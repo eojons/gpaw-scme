@@ -489,6 +489,9 @@ class RealSpaceHamiltonian(Hamiltonian):
                         forces=True)
         self.vbar_g = None
 
+        self.setups = setups
+        self.nspins = nspins
+
     def summary(self, fd):
         Hamiltonian.summary(self, fd)
 
@@ -519,7 +522,8 @@ class RealSpaceHamiltonian(Hamiltonian):
         if self.vext is not None:
             assert self.collinear
             if hasattr(self.vext, 'calcmm'):
-                vt_g += self.vext.get_potential(self.finegd,density,self.wfs)
+                vt_g += self.vext.get_potential(self.finegd,density,
+                                                self.setups,self.nspins)
             else:
                 vt_g += self.vext.get_potential(self.finegd)
             Eext = self.finegd.integrate(vt_g, density.nt_g,

@@ -1,7 +1,7 @@
 import numpy as np
 from ase.atom import Atom
 from ase.atoms import Atoms
-from ase.units import Bohr, kcal, mol, Hartree
+from ase.units import Bohr, kcal, mol, Hartree, Debye
 from gpaw.utilities.timing import Timer
 
 from math import sqrt, pi
@@ -9,6 +9,13 @@ from math import sqrt, pi
 import _gpaw
 from gpaw import debug
 
+# Testing purposes:
+from gpaw.mpi import rank, MASTER
+
+def smooth(x,g):
+    #
+    g /= Bohr
+    return (g**5 - x**5) / (g**4 - x**4)
 
 class DipoleQuad:
 
@@ -18,7 +25,7 @@ class DipoleQuad:
 
     """
 
-    def __init__(self, mm, qm,  mp, calcmm, dyn=False):
+    def __init__(self, mm, qm,  mp, calcmm, dyn=False, g=0.5):
 
         self.mm     = mm     # mm atoms object
         self.mp     = mp     # no. atoms per center of mass (cm)
@@ -31,55 +38,79 @@ class DipoleQuad:
         self.nm     = len(self.mm) / self.mp
         self.cm     = self.get_cm(self.nm)
         self.timer  = Timer()
+        # smoothing value
+        self.g = g
 
         # initialization
         self.initial = True
+        
+        # Hold on to old arrays
+        self.dipoles = None
+        self.qpoles  = None
+        self.dipoles_1 = None
+        self.qpoles_1  = None
+        
 
-
-    def get_potential(self, gd=None, density=None, wfs=None):
+    def get_potential(self, gd=None, density=None, 
+                      setups=None, nspins=None):
         """ Create external potential from dipoles
             and quadrupoles with origin at the 
             center of mass of each classical 
             molecule in the atoms object """
 
         if self.initial:
-            self.update_potential(gd=gd, density=density, wfs=wfs)
+            self.update_potential(gd=gd, density=density, 
+                                  setups=setups, nspins=nspins)
             return self.potential    
         elif self.dyn:
-            self.update_potential(gd=gd, density=density, wfs=wfs)
+            if not self.check_convergence():
+                self.update_potential(gd=gd, density=density,
+                                      setups=setups, nspins=nspins)
             return self.potential
         else:
             if hasattr(self, 'potential'):
                 if gd == self.gd or gd is None:
                 # Nothing changed
-                return self.potential
+                    return self.potential
 
 
-    def update_potential(self, gd=None, density=None, wfs=None):
+    def update_potential(self, gd=None, density=None, 
+                         setups=None, nspins=None):
 
-        if gd is None:
-            gd = self.gd
+        # Save old dipoles
+        if self.dipoles is not None:
+            self.dipoles_1 = self.dipoles.copy()
+            self.qpoles_1  = self.qpoles.copy()
+
+        self.gd = gd
 
         # Grab electric field and derivative values
         self.timer.start('Electric Field and Derivative')
-        eF, deF = self.get_field(density, wfs)
+        eF, deF = self.get_efield(density, setups, nspins)
         self.timer.stop('Electric Field and Derivative')
+
+        calcmm = self.calcmm
+        mm = self.mm
 
         #######################################
         # Pass (new) values to SCME
-        self.calcmm.eF  = eF   # <-- ! CHECK
-        self.calcmm.deF = deF
-        self.mm.set_calculator(self.calcmm)
+        calcmm.eF  = eF   # <-- ! CHECK
+        calcmm.deF = deF
         self.timer.start('SCME Calculation')
-        self.mm.get_potential_energy()
+        calcmm.calculate(mm)
         self.timer.stop('SCME Calculation')
         #######################################
 
         # Values are in atomic-units
-        dipole = self.calcmm.dipoles \
-                 / (332.1 * kcal / mol) / 2.541746 # <-- UNITS
+        dipole = calcmm.dipoles / Bohr
+        qpoles = calcmm.qpoles  / Bohr**2
 
-        # Qpole here
+        #
+        if rank == MASTER:
+            print 'dipoles'
+            print dipole * Bohr / Debye
+            print 'qpoles'
+            print qpoles * Bohr**2 / Debye
 
         # No. solvent mols
         n = len(self.mm) / self.mp
@@ -101,10 +132,19 @@ class DipoleQuad:
             # mUr            
             mUr = np.dot(xyz,dipole[a])
             #
+            Q = qpoles[a,:,:]
             # |r - rcm|
             dis = np.sqrt(((xyz.T)**2).sum(axis=0))
+            dis_d = smooth(dis, self.g)
+            dis_q = smooth(dis, 0.3)
             # Add dipole component
-            potential += mUr.T / dis**3
+            potential += mUr.T / dis_d**3
+            # Quadrupole components:
+            for i in range(3):
+                for j in range(3):
+                    potential += Q[i,j]*xyz.T[i,:,:,:]*xyz.T[j,:,:,:] / dis_q**5
+                    if i == j:
+                        potential -= 1./3 * Q[i,j] / dis_q**3
 
         # Potential updated
         self.initial = False
@@ -114,13 +154,27 @@ class DipoleQuad:
         self.potential = potential
         self.eF  = eF
         self.deF = deF
+        self.qpoles = qpoles.copy()
+        self.dipoles = dipole.copy()
 
 
-    def get_efield(self, density, wfs):
+    def check_convergence(self):
+        if self.dipoles_1 is not None:
+            dip = abs(self.dipoles - self.dipoles_1).sum()
+            qua = abs(self.qpoles - self.qpoles_1).sum()
+            if rank == MASTER:
+                print dip, qua
+            return np.max([dip]) < 1e-5
+        else:
+            return False
+
+
+    def get_efield(self, density, setups, nspins):
         """ Evaluate electric field at each cm
             from total psuedo charge density. 
 
         """
+        gd = self.gd
 
         eF  = np.zeros((3,self.nm))
         deF = np.zeros((3,3,self.nm))
@@ -129,9 +183,9 @@ class DipoleQuad:
         comp = np.zeros(self.qmidx)
         density.Q_aL = {}
         for a, D_sp in density.D_asp.items():
-            Q_L = density.Q_aL[a] = np.dot(D_sp[:wfs.nspins].sum(0),
-                                           wfs.setups[a].Delta_pL)
-            Q_L[0] += wfs.setups[a].Delta0
+            Q_L = density.Q_aL[a] = np.dot(D_sp[:nspins].sum(0),
+                                           setups[a].Delta_pL)
+            Q_L[0] += setups[a].Delta0
             comp[a] += Q_L[0]
 
         # Collect over gd domains
@@ -141,22 +195,18 @@ class DipoleQuad:
         # Grab pseudo-density on gd
         if density.nt_sg is None:
             density.interpolate_pseudo_density()
-        nt_sg = density.nt_sg
+        nt_sG = density.nt_sg
         #
         if density.nspins == 1:
             nt_g = nt_sG[0]
         else:
-            nt_g = nt_sg.sum(axis=0)
+            nt_g = nt_sG.sum(axis=0)
 
-        assert np.shape(nt_g) == np.shape(self.gd)
+        #assert np.shape(nt_g) == np.shape(self.gd)
         #
-        sG = (np.indices(self.gd.n_c, float).T + \
-              self.gd.beg_c) / self.gd.N_c
+        sG = (np.indices(gd.n_c, float).T + \
+              gd.beg_c) / gd.N_c
         # Arrays
-        # eFdens = np.zeros_like(eF)
-        # eFnucl = np.zeros_like(eF)
-        # deFdens = np.zeros_like(deF)
-        # deFnucl = np.zeros_like(deF)
         #
         for a, pos in enumerate(self.cm):
             # Get all gpt distances relative to molecule a
@@ -165,22 +215,29 @@ class DipoleQuad:
             xyz = np.dot(nsG, gd.cell_cv)
             # distance to all gpts
             dis = np.sqrt(((xyz.T)**2).sum(axis=0))
+            # dis = smooth(dis, self.g)
             # total field on cm due to density
-            eFT = (xyz.T)*nt_g / dis**3
+            eFT = (xyz.T)*nt_g*gd.dv / dis**3
             eF[:,a] += [eFT[0].sum(),eFT[1].sum(),eFT[2].sum()]
             # nuclei-to-dipole
-            xyz_n = self.qm.get_positions() - pos
+            xyz_n = self.qm.get_positions() / Bohr - pos
             dis_n = np.sqrt((xyz_n**2).sum(axis=1))
-            eF[:,a] += (xyz_n.T * comp  / dis_n).T.sum(axis=0)
+            eF[:,a] -= (xyz_n.T * comp  / dis_n**3).T.sum(axis=0)
             # Loop for deF 
             for n in range(3):
                 # ...
-                nr_ir = xyz.T[n]*xyz.T*nt_g
+                nr_ir = xyz.T[n]*xyz.T*nt_g*3.*gd.dv / dis**5
+                deF[n,:,a] -= [nr_ir[0].sum(),nr_ir[1].sum(),nr_ir[2].sum()]
+                deF[n,n,a] += (nt_g*gd.dv / dis**3).sum()
+                # comp
+                deF[n,:,a] += 3*(xyz_n.T[n]*xyz_n.T*comp / dis_n**5).T.sum(axis=0)
+                deF[n,n,a] -= (comp / dis_n**3).sum()
 
-        # Collect eF and deF here... then gd.comm.sum(eF)? <-- check!!!
-
-        #nt_g = self.gd.collect(nt_g, True)
-        # Collect over gd domains
+        gd.comm.sum(eF)
+        gd.comm.sum(deF)
+       
+        # Change units to D/A, D/AA 
+        return eF/Bohr**2, deF/Bohr**3
 
 
     def get_nuclear_energy(self, nucleus):
@@ -230,7 +287,7 @@ class DipoleQuad:
         for i in range(n):
             cm[i,:] += atoms[i*mp:(i+1)*mp].get_center_of_mass() / Bohr
 
-        self.cm = cm.copy()
+        return cm
 
 
 class PointCharges:

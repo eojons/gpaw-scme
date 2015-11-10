@@ -6,16 +6,21 @@ from ase.units import Bohr, kcal, mol, Hartree
 import _gpaw
 from gpaw import debug
 
+def smooth(x, g):
+    #
+    g = g / Bohr
+    return (g**5 - x**5) / (g**4 - x**4)
 
 class DipoleQuad:
 
-    def __init__(self, mm, dipole, quad, mp):
+    def __init__(self, mm, dipole, quad, mp, g=0.5):
         self.mm     = mm
         self.dipole = dipole # dipole at CM of mol i
         self.quad   = quad   # quad   at CM of mol i
         self.mp     = mp     # no. atoms per CM
         # CM is center of mass.
-        self.cm     = None
+        self.cm = None
+        self.g  = g
 
 
     def get_potential(self, gd=None):
@@ -32,8 +37,8 @@ class DipoleQuad:
             gd = self.gd
 
         # Values are in atomic-units
-        dipole = self.dipole / (332.1 * kcal / mol) / 2.5417462310548435
-        quad   = self.quad   / (332.1 * kcal / mol) / 2.5417462310548435**2
+        dipole = self.dipole / Bohr #/ (332.1 * kcal / mol) / 2.5417462310548435
+        quad   = self.quad / Bohr**2   #/ (332.1 * kcal / mol) / 2.5417462310548435**2
 
         # No. solvent mols
         n = len(self.mm) / self.mp
@@ -59,17 +64,19 @@ class DipoleQuad:
             # mUr            
             mUr = np.dot(xyz,dipole[a])
             # rQr
-            Q = quad[:,:,a]
+            Q = quad[a,:,:]
             # |r - rcm|
             dis = np.sqrt(((xyz.T)**2).sum(axis=0))
+            # Smoothing
+            dis = smooth(dis, self.g)
             # Add dipole component
             potential += mUr.T / dis**3
             # Quadrupole components:
             for i in range(3):
                 for j in range(3):
                     potential += Q[i,j]*xyz.T[i,:,:,:]*xyz.T[j,:,:,:] / dis**5
-                    #if i == j:
-                    #    potential -= 1./3 * Q[i,j]*xyz.T[i,:,:,:]**2 / dis**5
+                    if i == j:
+                        potential -= 1./3 * Q[i,j] / dis**3
 
         # Hold on to
         self.gd = gd
@@ -113,8 +120,8 @@ class DipoleQuad:
             for i in range(3):
                 for j in range(3):
                     v += Q[i,j]*dr[i]*dr[j] / dis**5
-                    #if i == j:
-                    #   v -= 1./3 * Q[i,j]*dr[i]**2 / dis**5
+                    if i == j:
+                       v -= 1./3 * Q[i,j]*dr[i]**2 / dis**5
         return v
 
 
